@@ -1,13 +1,25 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
+var config *Config
+
 func main() {
+	var err error
+	config, err = loadConfig()
+	if err != nil {
+		//@todo: Improve error handling and config creation
+		fmt.Println("Error loading config:", err)
+		fmt.Println("Please config your projects root directory in ~/.config/gool/config.json")
+		os.Exit(1)
+	}
+
 	if err := run(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -29,7 +41,7 @@ func run() error {
 }
 
 func ls() {
-	projects := getProjects()
+	projects := getProjects(true)
 	for _, project := range projects {
 		fmt.Println(project.Name)
 		fmt.Println(project.Type)
@@ -42,17 +54,29 @@ func cd() {
 }
 
 // Misc functions
+type Config struct {
+	ProjectsRootDir string `json:"ProjectsRootDir"`
+}
 type Project struct {
 	Name      string
 	ShortName string
 	Path      string
 	Type      string
+	IsDdev    bool
 }
 
-func getProjects() []Project {
-	projectsRootDir := getProjectsRootDir()
-	projectsDirs := getDirProjects(projectsRootDir)
+func getProjects(cache bool) []Project {
+
 	var projects []Project
+	if cache {
+		projects, _ := loadProjectsFromCache()
+		if projects != nil {
+			return projects
+		}
+	}
+
+	projectsRootDir := config.ProjectsRootDir
+	projectsDirs := getDirProjects(projectsRootDir)
 	for _, projectDir := range projectsDirs {
 		name := strings.Replace(projectDir, projectsRootDir, "", -1)
 		projects = append(projects, Project{
@@ -60,14 +84,35 @@ func getProjects() []Project {
 			ShortName: filepath.Base(projectDir),
 			Path:      projectDir,
 			Type:      getProjectType(projectDir),
+			IsDdev:    fileExists(filepath.Join(projectDir, ".ddev")),
 		})
 	}
+
+	_ = saveCache(projects, "projects.json")
 	return projects
 }
 
-func getProjectsRootDir() string {
-	return "/home/natsu/Proyectos/"
+func loadProjectsFromCache() ([]Project, error) {
+	file, errFile := loadCache("projects.json")
+	if errFile != nil {
+		return nil, errFile
+	}
+	var projects []Project
+	decoder := json.NewDecoder(file)
+	err := decoder.Decode(&projects)
+	return projects, err
 }
+
+//func saveProjectsToFile(projects []Project, filename string) error {
+//	file, err := os.Create(filename)
+//	if err != nil {
+//		return err
+//	}
+//	defer file.Close()
+//
+//	encoder := json.NewEncoder(file)
+//	return encoder.Encode(projects)
+//}
 
 func getProjectType(projectDir string) string {
 	composerFile := filepath.Join(projectDir, "composer.json")
@@ -153,4 +198,73 @@ func getDirProjects(projectsDir string) []string {
 	}
 
 	return projects
+}
+
+func loadConfig() (*Config, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+
+	configPath := filepath.Join(homeDir, ".config", "gool", "config.json")
+	if fileExists(configPath) == false {
+		os.MkdirAll(filepath.Join(homeDir, ".config", "gool"), 0755)
+		_, _ = os.Create(configPath)
+	}
+
+	file, err := os.Open(configPath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var config Config
+	decoder := json.NewDecoder(file)
+	if err := decoder.Decode(&config); err != nil {
+		return nil, err
+	}
+
+	return &config, nil
+}
+
+func loadCache(cacheName string) (*os.File, error) {
+	cacheFile, err := getCacheDir(cacheName)
+	if err != nil {
+		return nil, err
+	}
+
+	return os.Open(cacheFile)
+}
+
+func saveCache(data any, cacheName string) error {
+	cacheFile, err := getCacheDir(cacheName)
+	if err != nil {
+		return err
+	}
+
+	file, err := os.Create(cacheFile)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	return encoder.Encode(data)
+}
+
+func getCacheDir(cacheName string) (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	cacheDir := filepath.Join(homeDir, ".cache", "gool")
+	if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
+		err = os.MkdirAll(cacheDir, 0755)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	return filepath.Join(cacheDir, cacheName), nil
 }
